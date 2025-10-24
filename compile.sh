@@ -1,140 +1,86 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
-# =============================================
-# COMPILADOR AES-128 ARM64 - PROYECTO UNIVERSIDAD
-# =============================================
-
-# Configuración de parámetros base
+# =========================
+# Configuración de toolchain
+# =========================
 AS="aarch64-linux-gnu-as"
 LD="aarch64-linux-gnu-ld"
-ASFLAGS="-g"                # Incluye símbolos de depuración
-LDFLAGS="-static -g"        # Enlace estático con debug
-SRC_DIR="./src"             # Carpeta de código fuente
-BUILD_DIR="./build"         # Carpeta para archivos .o
-OUTPUT="aes128"             # Nombre del ejecutable final
+QEMU="qemu-aarch64"
 
-# =============================================
-# FUNCIONES DE UTILIDAD
-# =============================================
+# Include de archivos (para .include "macros.s", etc.)
+ASFLAGS="-I ./src"
 
-print_status() {
-    echo "📦 $1"
+BUILD_DIR="./build"
+SRC_DIR="./src"
+
+mode="${1:-build}"
+
+# Colores (opcional)
+green() { printf "\033[1;32m%s\033[0m\n" "$*"; }
+yellow() { printf "\033[1;33m%s\033[0m\n" "$*"; }
+red() { printf "\033[1;31m%s\033[0m\n" "$*"; }
+
+ensure_build_dir() {
+  mkdir -p "$BUILD_DIR"
 }
 
-print_error() {
-    echo "❌ $1"
-}
+assemble_all() {
+  green "🔧 Modo: Compilar código fuente..."
+  ensure_build_dir
+  yellow "🛠️  Ensamblando Archivos..."
 
-print_success() {
-    echo "✅ $1"
-}
+  # Toma todos los .s menos macros.s (las macros solo se incluyen)
+  mapfile -t sources < <(find "$SRC_DIR" -maxdepth 1 -type f -name "*.s" ! -name "macros.s" | sort)
 
-# =============================================
-# MODO LIMPIEZA
-# =============================================
-
-if [[ "$1" == "clean" ]]; then
-    print_status "Limpiando build..."
-    rm -rf "$BUILD_DIR"
-    if [[ -f "./$OUTPUT" ]]; then
-        rm "./$OUTPUT"
-    fi
-    print_success "Limpieza completada"
-    exit 0
-fi
-
-# =============================================
-# MODO COMPILACIÓN
-# =============================================
-
-print_status "Iniciando compilación AES-128 ARM64..."
-
-# Crear directorio build si no existe
-if [[ ! -d "$BUILD_DIR" ]]; then
-    print_status "Creando directorio build..."
-    mkdir -p "$BUILD_DIR"
-    if [[ $? -ne 0 ]]; then
-        print_error "No se pudo crear directorio build"
-        exit 1
-    fi
-fi
-
-# =============================================
-# ENSAMBLAR ARCHIVOS
-# =============================================
-
-print_status "Ensamblando archivos..."
-
-# Lista de archivos a compilar (en orden de dependencia)
-archivos=(
-    "constants.s"
-    "macros.s" 
-    "utils.s"
-    "addRoundKey.s"
-    "byteSub.s"
-    "shiftRows.s"
-    "mixColumns.s"
-    "keyExpansion.s"
-    "main.s"
-)
-
-# Ensamblar cada archivo
-for archivo in "${archivos[@]}"; do
-    if [[ -f "$SRC_DIR/$archivo" ]]; then
-        print_status "  $archivo -> ${archivo%.s}.o"
-        $AS $ASFLAGS -I "$SRC_DIR" -o "$BUILD_DIR/${archivo%.s}.o" "$SRC_DIR/$archivo"
-        if [ $? -ne 0 ]; then
-            print_error "Error ensamblando $archivo"
-            exit 1
-        fi
-    else
-        print_error "Archivo no encontrado: $SRC_DIR/$archivo"
-        exit 1
-    fi
-done
-
-print_success "Ensamblado completado"
-
-# =============================================
-# ENLAZAR OBJETOS
-# =============================================
-
-print_status "Enlazando objetos..."
-
-# Crear lista de objetos
-OBJ_FILES=""
-for archivo in "${archivos[@]}"; do
-    OBJ_FILES="$OBJ_FILES $BUILD_DIR/${archivo%.s}.o"
-done
-
-# Enlazar
-$LD $LDFLAGS $OBJ_FILES -o "$BUILD_DIR/$OUTPUT"
-
-if [ $? -ne 0 ]; then
-    print_error "Error enlazando objetos"
+  if [[ ${#sources[@]} -eq 0 ]]; then
+    red "❌ No hay archivos .s para ensamblar en $SRC_DIR"
     exit 1
-fi
+  fi
 
-print_success "Enlazado completado: $OUTPUT"
-print_success "Ejecutable listo en: $BUILD_DIR/$OUTPUT"
+  for s in "${sources[@]}"; do
+    obj="$BUILD_DIR/$(basename "${s%.s}").o"
+    base="$(basename "$s")"
+    echo "  $base -> $(basename "$obj")"
+    $AS $ASFLAGS -o "$obj" "$s"
+  done
+  green "✅ Ensamblado completado."
 
-# =============================================
-# OPCIONES DE EJECUCIÓN
-# =============================================
+  yellow "🔗 Enlazando objetos..."
+  # Enlaza todos los .o encontrados
+  mapfile -t objs < <(find "$BUILD_DIR" -maxdepth 1 -type f -name "*.o" | sort)
 
-if [[ "$1" == "exec" ]]; then
-    print_status "Ejecutando programa..."
-    qemu-aarch64 "$BUILD_DIR/$OUTPUT"
-    
-elif [[ "$1" == "debug" ]]; then
-    print_status "Iniciando depuración..."
-    echo "🔍 Iniciando QEMU en puerto 1234..."
-    qemu-aarch64 -g 1234 "$BUILD_DIR/$OUTPUT" &
-    sleep 2
-    echo "Iniciando GDB..."
-    gdb-multiarch -q "$BUILD_DIR/$OUTPUT" -ex "target remote localhost:1234" -ex "layout split"
-    
-elif [[ "$1" == "test" ]]; then
-    print_status "Ejecutando prueba básica..."
-    qemu-aarch64 "$BUILD_DIR/$OUTPUT"
-fi
+  # Recomendado: exigir main.o para tener punto de entrada _start
+  if [[ ! -f "$BUILD_DIR/main.o" ]]; then
+    red "❌ Falta $BUILD_DIR/main.o (asegúrate de tener src/main.s con etiqueta _start)"
+    exit 1
+  fi
+
+  $LD -o "$BUILD_DIR/main" "${objs[@]}"
+  green "✅ Enlace completado: $BUILD_DIR/main"
+}
+
+run_prog() {
+  if [[ ! -x "$BUILD_DIR/main" ]]; then
+    red "❌ No existe $BUILD_DIR/main. Compila primero:  bash compile.sh build"
+    exit 1
+  fi
+  yellow "▶️  Ejecutando con QEMU..."
+  exec $QEMU "$BUILD_DIR/main"
+}
+
+clean_all() {
+  yellow "🧹 Limpiando build..."
+  rm -rf "$BUILD_DIR"
+  green "✅ Limpieza completada."
+}
+
+case "$mode" in
+  build) assemble_all ;;
+  run)   run_prog ;;
+  clean) clean_all ;;
+  *)
+    echo "Uso: bash compile.sh [build|run|clean]"
+    exit 1
+    ;;
+esac
