@@ -1,7 +1,5 @@
 // src/constants.s
 // Tablas constantes para AES
-// - Sbox (256 bytes)
-// - Rcon (10 bytes) [opcional para keyExpansion]
 
     .section .rodata
     .balign 16
@@ -27,5 +25,4 @@ Sbox:
 
     .global Rcon
 Rcon:
-    // Rcon[1..10] típicamente; aquí 10 entradas para AES-128
     .byte 0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1B,0x36
